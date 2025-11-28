@@ -13,6 +13,7 @@ public class BrouilleImage {
 
         String inPath = args[0];
         String outPath = (args.length >= 3) ? args[2] : "out.png";
+        String outUnscramblePath = (args.length >= 3) ? "unscrambled_" + args[2] : "unscrambled_out.png";
         // Masque 0x7FFF pour garantir que la clé ne dépasse pas les 15 bits
         int key = Integer.parseInt(args[1]) & 0x7FFF ;
 
@@ -31,6 +32,9 @@ public class BrouilleImage {
         BufferedImage scrambledImage = scrambleLines(inputImage, perm);
         ImageIO.write(scrambledImage, "png", new File(outPath));
         System.out.println("Image écrite: " + outPath);
+        BufferedImage unscrambledImage = unscrambleLines(scrambledImage, perm);
+        ImageIO.write(unscrambledImage, "png", new File(outUnscramblePath));
+        System.out.println("Image ddecrypte");
     }
 
 
@@ -65,11 +69,37 @@ public class BrouilleImage {
      * @return tableau de taille 'size' contenant une permutation des entiers 0..size-1
      */
 
+    /*
+    Une ligne d’indice idLigne (la ligne 0 étant tout en haut) dans l’image d’entrée
+    en clair sera ainsi déplacée en position ((r + (2s+1)idLigne)%size) où
+    r est un décalage (offset) codé sur 8 bits
+    s est un pas (step) codé sur 7 bits
+    l’ensemble (r,s) forme la clé de chiffrement
+     */
     public static int[] generatePermutation(int size, int key){
         int[] scrambleTable = new int[size];
-        for (int i = 0; i < size; i++) scrambleTable[i] = i;
+        // scrambleTable[i] = ligne i pour l'instant
+        // le but: generer la permutation
+        for (int i = 0; i < size; i++) {
+            scrambleTable[i] = scrambledId(i, size, key);
+        }
         return scrambleTable;
     }
+
+    // https://stackoverflow.com/questions/14145733/how-can-one-read-an-integer-bit-by-bit-in-java
+    static String getBit(int n, int k) {
+        return "" + ((n >> k) & 1);
+    }
+    static String getBits(int n, int lower, int upper) {
+        StringBuilder stringBuilder = new StringBuilder();
+        for(int i = upper; i >= lower; i--) {
+            stringBuilder.append(getBit(n, i));
+        }
+        System.out.println("Debug: " + n + " devient " + Integer.toBinaryString(n));
+        System.out.println("Debug: " + n + " devient avec [" + lower + ", " + upper + "]:\t " + stringBuilder.toString());
+        return stringBuilder.toString();
+    }
+
 
     /**
      * Mélange les lignes d'une image selon une permutation donnée.
@@ -82,23 +112,32 @@ public class BrouilleImage {
         int height = inputImg.getHeight();
         if (perm.length != height) throw new IllegalArgumentException("Taille d'image <> taille permutation");
 
-//        BufferedImage out = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-        BufferedImage out = inputImg;
-
-        for(int i = 0; i < height - 3; i+=2) {
-            for(int j = 0; j < width - 1; j++) {
-                int oldRgb = out.getRGB(j, i);
-                // on inverse les deux lignes
-                int newRgb = out.getRGB(j, i);
-                out.setRGB(j, i, newRgb);
-                out.setRGB(j, i + 1, oldRgb);
+        BufferedImage toScramble = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        for(int idLigne = 0; idLigne < height; idLigne++) {
+            for(int pixelLigne = 0; pixelLigne < width; pixelLigne++) {
+                // on change une ligne pixel par pixel
+                // on change cette ligne par la ligne ((r + (2s+1)idLigne)%size)
+                int lignePermut = perm[idLigne];
+                toScramble.setRGB(pixelLigne, idLigne, inputImg.getRGB(pixelLigne, lignePermut));
             }
         }
-        return out;
+        return toScramble;
     }
 
     public static BufferedImage unscrambleLines(BufferedImage scrambledImage, int[] perm) {
-        return null;
+        int width = scrambledImage.getWidth();
+        int height = scrambledImage.getHeight();
+        if(perm.length != height) throw new IllegalArgumentException("Taille d'image <> taille permutation");
+
+        BufferedImage unscrambled = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+
+        for(int idLigne = 0; idLigne < height; idLigne++) {
+            for(int pixelLigne = 0; pixelLigne < width; pixelLigne++) {
+                int lignePermut = perm[idLigne];
+                unscrambled.setRGB(pixelLigne, lignePermut, scrambledImage.getRGB(pixelLigne, idLigne));
+            }
+        }
+        return unscrambled;
     }
 
     /**
@@ -109,7 +148,18 @@ public class BrouilleImage {
      * @return indice de la ligne dans l'image brouillée (0..size-1)
      */
     public static int scrambledId(int id, int size, int key) {
-        return id;
+        String rBits = getBits(key, 7, 14);
+        String sBits = getBits(key, 0, 6); // 10
+        int r = Integer.parseInt(rBits, 2); // 8 premiers bits de key
+        int s = Integer.parseInt(sBits, 2); // 7 derniers bits de key
+//        System.out.println("Clef de " + Integer.toBinaryString(key).length() + " bits");
+//        System.out.println("decKey=" + key);
+//        System.out.println("binKey=" + Integer.toBinaryString(key));
+//        System.out.println("rBits="+rBits);
+//        System.out.println("sBits="+sBits);
+//        System.out.println("r="+r);
+//        System.out.println("s="+s);
+        return ((r + ((2 * s) + 1) * id) % size);
     }
 
 }
