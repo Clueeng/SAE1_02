@@ -35,6 +35,13 @@ public class BrouilleImage {
         BufferedImage unscrambledImage = unscrambleLines(scrambledImage, perm);
         ImageIO.write(unscrambledImage, "png", new File(outUnscramblePath));
         System.out.println("Image ddecrypte");
+
+
+        int broken = breakKey(scrambledImage);
+        System.out.printf("Clef trouvee: %s\n", broken);
+        int[] brokenPerm = generatePermutation(height, broken);
+        BufferedImage imageCassee = unscrambleLines(scrambledImage, brokenPerm);
+        ImageIO.write(imageCassee, "png", new File("broken.png"));
     }
 
 
@@ -95,8 +102,8 @@ public class BrouilleImage {
         for(int i = upper; i >= lower; i--) {
             stringBuilder.append(getBit(n, i));
         }
-        System.out.println("Debug: " + n + " devient " + Integer.toBinaryString(n));
-        System.out.println("Debug: " + n + " devient avec [" + lower + ", " + upper + "]:\t " + stringBuilder.toString());
+//        System.out.println("Debug: " + n + " devient " + Integer.toBinaryString(n));
+//        System.out.println("Debug: " + n + " devient avec [" + lower + ", " + upper + "]:\t " + stringBuilder.toString());
         return stringBuilder.toString();
     }
 
@@ -160,6 +167,146 @@ public class BrouilleImage {
 //        System.out.println("r="+r);
 //        System.out.println("s="+s);
         return ((r + ((2 * s) + 1) * id) % size);
+    }
+
+    /**
+     * Retourne la distance euclidienne de deux lignes differentes
+     * @param line1 premiere ligne de pixel a comparer
+     * @param line2 seconde ligne de pixel a comparer
+     * @param n la longueur de l'image (width)
+     * @return la distance euclidenne des deux lignes
+     */
+    public static double euclideanDistance(int[] line1, int[] line2, int n) {
+        double total = 0.0f;
+        for(int i = 0; i <= n - 1; i++) {
+            // calcul en utilisant la formule sur p
+            total += (line1[i] - line2[i]) * (line1[i] - line2[i]);
+        }
+        return Math.sqrt(total);
+    }
+
+    // https://stackoverflow.com/questions/17183587/convert-integer-color-value-to-rgb
+    static int[] getRgbLigne(int ligne, int width, BufferedImage image) {
+        int[] pixelPremier = new int[width];
+        for(int pixelLigne = 0; pixelLigne < width; pixelLigne++) {
+            int col = image.getRGB(pixelLigne, ligne);
+            int red =  (col >> 16) & 0xFF;
+            int green = (col >> 8) & 0xFF;
+            int blue = (col) & 0xFF;
+            pixelPremier[pixelLigne] = red + green + blue;
+        }
+        return pixelPremier;
+    }
+
+    public static double scoreEuclidean(BufferedImage image) {
+        int width = image.getWidth();
+        int height = image.getHeight();
+        double score = 0.0f;
+        for (int ligne = 0; ligne < height-1; ligne+=2) {
+            int[] pixelPremier = getRgbLigne(ligne, width, image);
+            int[] pixelDeux = getRgbLigne(ligne + 1, width, image);
+
+            score += euclideanDistance(pixelPremier, pixelDeux, width);
+        }
+        return (int) score;
+    }
+
+    public static double pearsonScore(BufferedImage image) {
+        int width = image.getWidth();
+        int height = image.getHeight();
+        double score = 0.0f;
+
+        for (int ligne = 0; ligne < height-1; ligne+=2) {
+            int[] pixelPremier = getRgbLigne(ligne, width, image);
+            int[] pixelDeux = getRgbLigne(ligne + 1, width, image);
+            score += pearsonLines(image, pixelPremier, pixelDeux);
+        }
+        return score / height;
+    }
+
+    public static double pearsonLines(BufferedImage image, int[] line1, int[] line2) {
+        // p(x, y)
+        int width = image.getWidth();
+
+        double avgLine1 = 0;
+        double avgLine2 = 0;
+
+        for(int line = 0; line < line1.length; line++)
+            avgLine1 += line1[line];
+        avgLine1 = (avgLine1 + 1) / line1.length;
+
+        for(int line = 0; line < line2.length; line++)
+            avgLine2 += line2[line];
+        avgLine2 = (avgLine2 + 1) / line2.length;
+
+        double sumTop = 0.0;
+        for(int i = 1; i < width; i++) {
+            sumTop += (line1[i] - avgLine1) * (line2[i] - avgLine2);
+        }
+
+        double sumLeft = 0.0;
+        for(int i = 1; i < width; i++) {
+            sumLeft += (line1[i] - avgLine1) * (line1[i - 1] - avgLine1);
+        }
+
+        double sumRight = 0.0;
+        for(int i = 1; i < width; i++) {
+            sumRight += (line2[i] - avgLine2) *  (line2[i] - avgLine2);
+        }
+
+        return (sumTop / (Math.sqrt(sumLeft) * Math.sqrt(sumRight)));
+    }
+
+    static int indexMax(double[] array) {
+        int maxIndex = 0;
+        for(int i = 1; i < array.length; i++) {
+            if(array[i] > array[maxIndex]){
+                maxIndex = i;
+            }
+        }
+        return maxIndex;
+    }
+
+    public static int breakKey(BufferedImage scrambled) {
+        int maxKeys = (int) Math.pow(2, 15);
+        double[] results = new double[maxKeys];
+        double oldMax = -1.0;
+
+
+        long startTime = System.nanoTime();
+        System.out.printf("\n");
+
+        for(int key = 0; key < maxKeys; key++) {
+            int height = scrambled.getHeight();
+            int[] perm = generatePermutation(height, key);
+            BufferedImage tested = unscrambleLines(scrambled, perm);
+            // TODO : Fix pearson
+            results[key] = scoreEuclidean(tested);
+            if(results[key] > oldMax) {
+                oldMax = results[key];
+//                System.out.printf("%f, %s/%s\n", results[key], key, maxKeys);
+            }
+            // on prend le temps total qui s'est passe, ensuite on le divise par le nombre de clef deja check
+            // ca donne le temps moyen d'une clef
+            int keysDone = key + 1;
+            int remainKey = maxKeys - keysDone;
+            long duration = System.nanoTime() - startTime;
+            long avgDuration = duration / keysDone;
+
+            long estimatedTimeLeft = avgDuration * remainKey;
+
+            // c'est des nano
+            double converted = estimatedTimeLeft / 1e9f;
+
+            String remainingTimeString = String.format("%.2f secondes", converted);
+
+            // https://gist.github.com/fnky/458719343aabd01cfb17a3a4f7296797
+            double perc = (double) keysDone / maxKeys * 100.0;
+            System.out.printf("\n\u001B[2A\u001B[0JCassage: %d/%d (%.2f%%)\nTemps restant: %s",
+                    keysDone, maxKeys, perc, remainingTimeString);
+        }
+
+        return indexMax(results);
     }
 
 }
