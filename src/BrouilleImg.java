@@ -2,6 +2,7 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 /**
@@ -36,54 +37,63 @@ public class BrouilleImg {
         System.out.println("Dimensions de l'image : " + width + "x" + height);
 
         File outPutFolder=new File("./output/");
-        if(!outPutFolder.exists()) {
-            outPutFolder.mkdirs();
+        if(!outPutFolder.exists() && !outPutFolder.mkdirs()) {
+            System.err.println("Pas pu creer le dossier");
         }
 
-        int key = 0;
+
+        // atomic integer utilise
+        AtomicInteger key = new AtomicInteger();
         switch (mode) {
             case "scramble" -> {
-                key = Integer.parseInt(args[2]) & 0x7FFF ;
+                key.set(Integer.parseInt(args[2]) & 0x7FFF);
                 System.out.println("Brouillage de " + inPath + " avec la clef " + key + "...");
                 System.out.println();
-                int[] perm = generatePermutation(height, key);
+                int[] perm = generatePermutation(height, key.get());
                 BufferedImage scrambledImage = scrambleLines(inputImage, perm);
                 ImageIO.write(scrambledImage, "png",
                         new File("output/scrambled.png"));
                 System.out.println("Fin, output: output/scrambled.png");
             }
             case "unscramble" -> {
-                key = Integer.parseInt(args[2]) & 0x7FFF ;
+                key.set(Integer.parseInt(args[2]) & 0x7FFF);
                 System.out.println("Debrouillage de " + inPath + " avec la clef " + key + "...");
-                int[] perm = generatePermutation(height, key);
+                int[] perm = generatePermutation(height, key.get());
                 BufferedImage unscrambledImage =
                         unscrambleLines(inputImage, perm);
                 ImageIO.write(unscrambledImage, "png",
                         new File("output/unscrambled.png"));
                 System.out.println("Fin, output: output/unscrambled.png");
             }
-            case "break" -> {
-                String method = args[2];
-                System.out.println("Cassage de la clef de " + inPath + " avec l'algo " + method);
-                switch (method) {
-                    case "pearson" ->
-                            key = breakKeyPearson(inputImage);
-                    case "euclidean" ->
-                            key = breakKeyEuclidean(inputImage);
-                    default -> {
-                        System.out.println("Methode " +
-                                method + " mon existante");
-                        System.exit(0);
+            case "break" ->
+                Profiler.profile(() -> {
+                    String method = args[2];
+                    System.out.println("Cassage de la clef de " + inPath + " avec l'algo " + method);
+                    switch (method) {
+                        case "pearson" ->
+                                key.set(breakKeyPearson(inputImage));
+                        case "euclidean" ->
+                                key.set(breakKeyEuclidean(inputImage));
+                        case "tv" ->
+                                key.set(breakKeyTV(inputImage));
+                        default -> {
+                            System.out.println("Methode " +
+                                    method + " mon existante");
+                            System.exit(0);
+                        }
                     }
-                }
-                int[] perm = generatePermutation(height, key);
-                BufferedImage unscrambledImage =
-                        unscrambleLines(inputImage, perm);
-                ImageIO.write(unscrambledImage, "png",
-                        new File("output/broken_" + method + ".png"));
-                System.out.println("Clef trouvee: " + key);
-                System.out.println("Fin, output: output/broken_" + method + ".png");
-            }
+                    System.out.println("Clef trouvee: " + key);
+                    int[] perm = generatePermutation(height, key.get());
+                    BufferedImage unscrambledImage =
+                            unscrambleLines(inputImage, perm);
+                    try {
+                        ImageIO.write(unscrambledImage, "png",
+                                new File("output/broken_" + method + ".png"));
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                    System.out.println("Fin, output: output/broken_" + method + ".png");
+                });
             default -> System.out.println("Mode non reconnu");
         }
     }
@@ -117,6 +127,7 @@ public class BrouilleImg {
      * @param size taille de la permutation
      * @param key clé de génération (15 bits)
      * @return tableau de taille 'size' contenant une permutation des entiers 0..size-1
+     * @see #scrambledId(int, int, int)
      */
     public static int[] generatePermutation(int size, int key){
         int[] scrambleTable = new int[size];
@@ -157,7 +168,7 @@ public class BrouilleImg {
 
     public static BufferedImage unscrambleLines(BufferedImage scrambledImage
             , int[] perm) {
-        int width = scrambledImage.getWidth();
+        int width  = scrambledImage.getWidth();
         int height = scrambledImage.getHeight();
         if(perm.length != height) throw new
                 IllegalArgumentException("Taille d'image <> taille permutation");
@@ -205,43 +216,12 @@ public class BrouilleImg {
         return Math.sqrt(total);
     }
 
-    /**
-     * @param scrambledGL l'image en niveau de gris brouillee
-     * @param perm la permutation trouvee avec une clef
-     * @return le score total d'une image avec l'algorithme d'Euclide
-     */
-    public static double euclideanScore(int[][] scrambledGL, int[] perm) {
-        int height = scrambledGL.length;
-        int width = scrambledGL[0].length;
-        double score = 0.0;
-        for (int i = 0; i < height - 1; i++) {
-            int[] lineA = scrambledGL[perm[i]];
-            int[] lineB = scrambledGL[perm[i+1]];
-
-            score += euclideanDistance(lineA, lineB, width);
+    public static double tvLine(int[] lineA, int[] lineB, int width) {
+        double variation = 0.0;
+        for (int i = 0; i < width; i++) {
+            variation += Math.abs(lineA[i] - lineB[i]);
         }
-        return score;
-    }
-
-    /**
-     * @param scrambledGL l'image en niveau de gris brouillee
-     * @param perm la permutation trouvee avec une clef
-     * @return le score total d'une image avec l'algorithme de Pearson
-     */
-    public static double pearsonScore(int[][] scrambledGL, int[] perm) {
-        int height = scrambledGL.length;
-        int width = scrambledGL[0].length;
-        double score = 0.0;
-
-        for (int i = 0; i < height - 1; i++) {
-            int[] lineA = scrambledGL[perm[i]];
-            int[] lineB = scrambledGL[perm[i + 1]];
-
-            score += pearsonLines(lineA, lineB, width);
-        }
-
-        int numPaires = height - 1;
-        return score / numPaires;
+        return variation;
     }
 
     /**
@@ -284,24 +264,75 @@ public class BrouilleImg {
 
     /**
      * Casse la clef d'une image chiffree en utilisant l'algorithme d'Euclide
-     * @param scrambled
+     * @param scrambled l'image cryptee
      * @return la clef d'origine
+     * @see #generatePermutation(int, int)
      */
     public static int breakKeyEuclidean(BufferedImage scrambled) {
-        int maxKeys = (int) Math.pow(2, 15);
-        double[] results = new double[maxKeys];
-        double oldMin = Double.POSITIVE_INFINITY;
-        int bestKey = Integer.MIN_VALUE;
+        int maxKeys = 1 << 15;
+        int[][] scrambledGL = rgb2gl(scrambled);
+        int height = scrambled.getHeight();
+        int width = scrambledGL[0].length;
+
+        // distances pre calculees
+        double[][] dists = new double[height][height];
+        for (int i = 0; i < height; i++) {
+            for (int j = 0; j < height; j++) {
+                dists[i][j] = euclideanDistance(scrambledGL[i], scrambledGL[j], width);
+            }
+        }
+
+        double minScore = Double.POSITIVE_INFINITY;
+        int bestKey = 0;
+
+        for (int key = 0; key < maxKeys; key++) {
+            int[] perm = generatePermutation(height, key);
+            double currentScore = 0;
+            for (int i = 0; i < height - 1; i++) {
+                currentScore += dists[perm[i]][perm[i+1]];
+            }
+            if (currentScore < minScore) {
+                minScore = currentScore;
+                bestKey = key;
+            }
+        }
+        return bestKey;
+    }
+
+    /**
+     * Casse la clef d'une image chiffree en utilisant l'algorithme de la variation totale
+     * @param scrambled image encryptee
+     * @return la clef d'origine
+     * @see #generatePermutation(int, int)
+     */
+    public static int breakKeyTV(BufferedImage scrambled) {
+        int maxKeys = 1 << 15; // 32768
         int[][] scrambledGL = rgb2gl(scrambled);
         int height = scrambled.getHeight();
 
-        for(int key = 0; key < maxKeys; key++) {
+        // pre calcul des distances de lignes (optimisattion)
+        double[][] lineDistances = new double[height][height];
+        for (int i = 0; i < height; i++) {
+            for (int j = 0; j < height; j++) {
+                if (i == j) continue;
+                lineDistances[i][j] = tvLine(scrambledGL[i], scrambledGL[j], scrambledGL[0].length);
+            }
+        }
+        // valeur initiale
+        double minTotalVariation = Double.POSITIVE_INFINITY;
+        int bestKey = 0;
+
+        for (int key = 0; key < maxKeys; key++) {
             int[] perm = generatePermutation(height, key);
-            results[key] = euclideanScore(scrambledGL, perm);
-            // 26 627
-            if(results[key] <= oldMin) {
+            double currentTV = 0;
+
+            for (int i = 0; i < height - 1; i++) {
+                currentTV += lineDistances[perm[i]][perm[i+1]];
+            }
+            // compairaison
+            if (currentTV < minTotalVariation) {
+                minTotalVariation = currentTV;
                 bestKey = key;
-                oldMin = results[key];
             }
         }
         return bestKey;
@@ -309,27 +340,38 @@ public class BrouilleImg {
 
     /**
      * Casse la clef d'une image chiffree en utilisant l'algorithme de Pearson
-     * @param scrambled
+     * @param scrambled image encryptee
      * @return la clef d'origine
+     * @see #generatePermutation(int, int) 
      */
     public static int breakKeyPearson(BufferedImage scrambled) {
-        int maxKeys = (int) Math.pow(2, 15);
-        double[] results = new double[maxKeys];
-        double oldMax = Double.NEGATIVE_INFINITY;
-        int bestKey = Integer.MIN_VALUE;
+        int maxKeys = 1 << 15;
         int[][] scrambledGL = rgb2gl(scrambled);
         int height = scrambled.getHeight();
+        int width = scrambledGL[0].length;
 
-        for(int key = 0; key < maxKeys; key++) {
-            int[] perm = generatePermutation(height, key);
-            results[key] = pearsonScore(scrambledGL, perm);
-
-            if(results[key] > oldMax) {
-                bestKey = key;
-                oldMax = results[key];
+        // distances pre calculees
+        double[][] dists = new double[height][height];
+        for (int i = 0; i < height; i++) {
+            for (int j = 0; j < height; j++) {
+                dists[i][j] = pearsonLines(scrambledGL[i], scrambledGL[j], width);
             }
         }
 
+        double maxScore = Double.NEGATIVE_INFINITY;
+        int bestKey = 0;
+
+        for (int key = 0; key < maxKeys; key++) {
+            int[] perm = generatePermutation(height, key);
+            double currentScore = 0;
+            for (int i = 0; i < height - 1; i++) {
+                currentScore += dists[perm[i]][perm[i+1]];
+            }
+            if (currentScore >= maxScore) {
+                maxScore = currentScore;
+                bestKey = key;
+            }
+        }
         return bestKey;
     }
 
